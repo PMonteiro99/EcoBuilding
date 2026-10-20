@@ -2,9 +2,13 @@
 // Eco Building — Eficiência energética num edifício
 // Sistemas Multimédia | ECGM | 2026/2027 | Paulo Monteiro (32441)
 //
-// Etapa 1: estrutura inicial e menu.
-// O jogador escolhe a tipologia da casa (T0 a T4) e carrega em COMEÇAR.
-// A ronda de jogo ainda não existe; aparece um ecrã provisório.
+// Etapa 2: o edifício e a ronda de jogo.
+// O jogador escolhe a tipologia, aparece a casa com as divisões e os
+// equipamentos, e tem 60 segundos para clicar nos que estão ligados.
+//
+// Classes (pasta classes/):
+//   Edificio    — cria as divisões e decide onde fica cada equipamento
+//   Equipamento — um equipamento ligado ou desligado
 // =====================================================================
 
 
@@ -15,6 +19,23 @@
 const LARGURA = 1024;
 const ALTURA = 576;
 const PASTA_IMAGENS = 'assets/';
+
+// Regras da ronda
+const DURACAO_RONDA = 60;            // segundos
+const PONTOS_POR_EQUIPAMENTO = 10;
+const CONTAGEM_INICIAL = 3;          // segundos de "3, 2, 1" antes de começar
+const RAIO_CLIQUE = 30;              // distância (px) ao centro do equipamento que conta como clique
+
+// Equipamentos que se ligam sozinhos durante a ronda
+const FRACAO_LIGADOS_INICIO = 0.4;   // 40% começam ligados
+const FRACAO_LIGADOS_MAXIMO = 0.7;   // nunca mais de 70% ligados ao mesmo tempo
+const INTERVALO_LIGAR = [1.6, 3.0];  // segundos entre cada equipamento que se liga
+
+// Posição da planta da casa no ecrã: cada quadrado da grelha 12 x 8 mede 80 x 54 px
+const PLANTA_X = 32;
+const PLANTA_Y = 72;
+const QUADRADO_LARGURA = 80;
+const QUADRADO_ALTURA = 54;
 
 // Paleta de cores usada em toda a interface
 const COR = {
@@ -27,16 +48,56 @@ const COR = {
   laranjaEscuro: '#9a5a1a',
   amarelo: '#ffd54a',
   fundoEscuro: '#0a1c16',
+  vermelho: '#d64541',
 };
 
-// Cor da parede de cada tipo de divisão (usada na planta dos cartões)
-const COR_DIVISAO = {
-  sala: '#f6e8cd',
-  estudio: '#f6e8cd',
-  quarto: '#cfe3f5',
-  cozinha: '#dfe5ea',
-  wc: '#d5f0e0',
-  hall: '#efe3d1',
+// Tipos de divisão.
+//   peso: divisões com mais peso recebem mais equipamentos no sorteio
+//   equipamentos: que equipamentos podem aparecer lá e com que probabilidade relativa
+//   mobilia: móveis fixos [imagem, lado ('esq' ou 'dir'), distância à parede em px]
+const TIPOS_DIVISAO = {
+  sala: {
+    nome: 'SALA', parede: '#f6e8cd', chao: '#a9774a', peso: 1.2,
+    equipamentos: { tv: 3, lamp: 3, ac: 2, computer: 1 },
+    mobilia: [['sofa', 'esq', 16], ['planta', 'dir', 14]],
+  },
+  estudio: {
+    nome: 'ESTÚDIO', parede: '#f6e8cd', chao: '#a9774a', peso: 1.2,
+    equipamentos: { tv: 2, lamp: 3, ac: 2, computer: 2 },
+    mobilia: [['sofa', 'esq', 16], ['cama', 'dir', 16]],
+  },
+  quarto: {
+    nome: 'QUARTO', parede: '#cfe3f5', chao: '#7f95b5', peso: 1,
+    equipamentos: { lamp: 3, computer: 3, ac: 2, tv: 1 },
+    mobilia: [['cama', 'esq', 14], ['roupeiro', 'dir', 14]],
+  },
+  cozinha: {
+    nome: 'COZINHA', parede: '#dfe5ea', chao: '#9aa3ad', peso: 0.8,
+    equipamentos: { lamp: 3, ac: 1 },
+    mobilia: [['bancada', 'esq', 10], ['frigorifico', 'dir', 12]],
+  },
+  wc: {
+    nome: 'WC', parede: '#d5f0e0', chao: '#7fb59a', peso: 0.4,
+    equipamentos: { lamp: 1 },
+    mobilia: [['sanita', 'esq', 14], ['lavatorio', 'dir', 12]],
+  },
+  hall: {
+    nome: 'HALL', parede: '#efe3d1', chao: '#a88c6a', peso: 0.4,
+    equipamentos: { lamp: 1 },
+    mobilia: [['planta', 'esq', 16], ['mesa', 'dir', 16]],
+  },
+};
+
+// Equipamentos.
+//   potencia: consumo simulado em kW (valores ilustrativos)
+//   local: 'teto' (lâmpada pendurada), 'parede' (no alto) ou 'chao' (em cima de um móvel)
+//   maximo: quantos deste tipo pode haver na mesma divisão
+//   caixa: parte visível da imagem em relação ao centro [esquerda, cima, direita, baixo]
+const EQUIPAMENTOS = {
+  lamp: { nome: 'Lâmpada', potencia: 0.06, local: 'teto', maximo: 2, caixa: [-16, -30, 16, 26] },
+  ac: { nome: 'Ar condicionado', potencia: 1.2, local: 'parede', maximo: 1, caixa: [-28, -24, 28, 30] },
+  tv: { nome: 'Televisão', potencia: 0.15, local: 'chao', movel: 'movel_tv', maximo: 1, caixa: [-28, -30, 28, 24] },
+  computer: { nome: 'Computador', potencia: 0.2, local: 'chao', movel: 'secretaria', maximo: 1, caixa: [-26, -26, 26, 30] },
 };
 
 // Cada tipologia tem uma planta desenhada numa grelha de 12 x 8 quadrados.
@@ -75,19 +136,34 @@ const CARTAO_Y = 132;
 
 // Botões (posição x, y, largura e altura)
 const BOTAO_COMECAR = { x: 382, y: 352, w: 260, h: 56 };
-const BOTAO_VOLTAR = { x: 412, y: 330, w: 200, h: 48 };
+const BOTAO_JOGAR_NOVAMENTE = { x: 262, y: 430, w: 280, h: 52 };
+const BOTAO_MENU = { x: 562, y: 430, w: 200, h: 52 };
 
 
 // ---------------------------------------------------------------------
 // 2. ESTADO DO JOGO
 // ---------------------------------------------------------------------
 
-let estado = 'menu';          // 'menu' ou 'jogo'
+let estado = 'menu';          // 'menu', 'jogo' ou 'resultado'
 let tipologiaEscolhida = 1;   // índice em TIPOLOGIAS (começa no T1)
 let areasClicaveis = [];      // botões e cartões desenhados no frame atual
+let ratoMexeu = false;        // a mira só aparece depois de o rato se mexer
 
-let imgCeu, imgFolha;
+// Imagens
+let imgCeu, imgFolha, imgAlerta;
 let imgEdificios = [];
+let imgEquipamentos = {};     // ex.: imgEquipamentos['lamp_on']
+let imgMoveis = {};           // ex.: imgMoveis['sofa']
+
+// Dados da ronda atual
+let edificio = null;
+let equipamentos = [];
+let tempoRestante = DURACAO_RONDA;
+let contagem = 0;
+let tempoAteProximo = 0;      // segundos até se ligar mais um equipamento
+let pontos = 0;
+let totalDesligados = 0;
+let totalLigados = 0;
 
 
 // ---------------------------------------------------------------------
@@ -97,10 +173,21 @@ let imgEdificios = [];
 function preload() {
   imgCeu = loadImage(PASTA_IMAGENS + 'backgrounds/bg_menu_sky.png');
   imgFolha = loadImage(PASTA_IMAGENS + 'ui/icon_leaf.png');
+  imgAlerta = loadImage(PASTA_IMAGENS + 'devices/alert_badge.png');
 
-  const nomes = ['apartamento', 'moradia', 'escritorio', 'escola'];
-  for (const nome of nomes) {
+  for (const nome of ['apartamento', 'moradia', 'escritorio', 'escola']) {
     imgEdificios.push(loadImage(PASTA_IMAGENS + 'buildings/' + nome + '.png'));
+  }
+
+  // cada equipamento tem uma imagem ligado (_on) e outra desligado (_off)
+  for (const tipo in EQUIPAMENTOS) {
+    imgEquipamentos[tipo + '_on'] = loadImage(PASTA_IMAGENS + 'devices/' + tipo + '_on.png');
+    imgEquipamentos[tipo + '_off'] = loadImage(PASTA_IMAGENS + 'devices/' + tipo + '_off.png');
+  }
+
+  const moveis = ['cama', 'sofa', 'roupeiro', 'bancada', 'frigorifico', 'sanita', 'lavatorio', 'mesa', 'planta', 'movel_tv', 'secretaria'];
+  for (const nome of moveis) {
+    imgMoveis[nome] = loadImage(PASTA_IMAGENS + 'furniture/' + nome + '.png');
   }
 }
 
@@ -113,31 +200,51 @@ function setup() {
 }
 
 function draw() {
+  // tempo desde o último frame, em segundos (limitado para não dar saltos se a janela perder o foco)
+  const dt = min(deltaTime / 1000, 0.1);
+
   // As áreas clicáveis são registadas de novo em cada frame, ao desenhar os botões
   areasClicaveis = [];
 
-  desenharCenario();
-  if (estado === 'menu') {
-    desenharMenu();
-  } else if (estado === 'jogo') {
-    desenharJogoProvisorio();
+  if (estado === 'jogo') {
+    atualizarRonda(dt);
+    desenharRonda();
+  } else {
+    desenharCenario();
+    if (estado === 'menu') desenharMenu();
+    if (estado === 'resultado') desenharResultado();
   }
   desenharRodape();
 
-  // Mostra a "mãozinha" quando o rato está por cima de algo clicável
-  if (ratoSobreAlgoClicavel()) {
+  // Durante a ronda o cursor normal é escondido e substituído pela mira
+  if (estado === 'jogo' && mouseY < 512) {
+    noCursor();
+  } else if (ratoSobreAlgoClicavel()) {
     cursor(HAND);
   } else {
     cursor(ARROW);
   }
 }
 
+function mouseMoved() {
+  ratoMexeu = true;
+}
+
 function mousePressed() {
+  ratoMexeu = true;
+
+  // primeiro os botões
   for (const area of areasClicaveis) {
     if (ratoDentro(area.retangulo)) {
       area.acao();
       return;
     }
+  }
+
+  // depois, durante a ronda, o clique num equipamento ligado desliga-o
+  if (estado === 'jogo' && contagem <= 0) {
+    const alvo = equipamentoSobORato();
+    if (alvo) desligarEquipamento(alvo);
   }
 }
 
@@ -152,6 +259,15 @@ function ratoDentro(r) {
 
 function ratoSobreAlgoClicavel() {
   return areasClicaveis.some((area) => ratoDentro(area.retangulo));
+}
+
+// Equipamento ligado que está debaixo do rato (ou null)
+function equipamentoSobORato() {
+  return equipamentos.find((eq) => eq.ligado && eq.estaSobORato()) || null;
+}
+
+function formatarKW(valor) {
+  return valor.toFixed(2).replace('.', ',') + ' kW';
 }
 
 // Escreve um texto com tamanho, cor e alinhamento
@@ -207,20 +323,23 @@ function desenharBotao(r, texto, acao, secundario = false, tamanhoTexto = 22) {
   areasClicaveis.push({ retangulo: r, acao: acao });
 }
 
-// Fundo: céu, os quatro edifícios e uma camada escura por cima.
-// A camada escura (mais forte em cima) dá contraste aos botões e ao texto.
+// Camada escura em degradê por cima do fundo, para dar contraste ao texto e aos botões
+function escurecerFundo(opacidadeCima, opacidadeMeio, opacidadeBaixo, altura) {
+  const degrade = drawingContext.createLinearGradient(0, 0, 0, altura);
+  degrade.addColorStop(0, 'rgba(10, 28, 22, ' + opacidadeCima + ')');
+  degrade.addColorStop(0.5, 'rgba(10, 28, 22, ' + opacidadeMeio + ')');
+  degrade.addColorStop(1, 'rgba(10, 28, 22, ' + opacidadeBaixo + ')');
+  drawingContext.fillStyle = degrade;
+  drawingContext.fillRect(0, 0, LARGURA, altura);
+}
+
+// Fundo dos menus: céu, os quatro edifícios e a camada escura
 function desenharCenario() {
   image(imgCeu, 0, 0, LARGURA, ALTURA);
   for (let i = 0; i < imgEdificios.length; i++) {
     image(imgEdificios[i], i * 245, 232, 288, 288);
   }
-
-  const degrade = drawingContext.createLinearGradient(0, 0, 0, 512);
-  degrade.addColorStop(0, 'rgba(10, 28, 22, 0.9)');
-  degrade.addColorStop(0.5, 'rgba(10, 28, 22, 0.72)');
-  degrade.addColorStop(1, 'rgba(10, 28, 22, 0.35)');
-  drawingContext.fillStyle = degrade;
-  drawingContext.fillRect(0, 0, LARGURA, 512);
+  escurecerFundo(0.9, 0.72, 0.35, 512);
 }
 
 // Tema no canto inferior esquerdo e dados do aluno no canto inferior direito (pedido no enunciado)
@@ -231,7 +350,84 @@ function desenharRodape() {
 
 
 // ---------------------------------------------------------------------
-// 5. ECRÃ DO MENU
+// 5. RONDA
+// ---------------------------------------------------------------------
+
+function comecar() {
+  novaRonda();
+}
+
+function novaRonda() {
+  const tipologia = TIPOLOGIAS[tipologiaEscolhida];
+  edificio = new Edificio(tipologia);
+  equipamentos = edificio.equipamentos;
+
+  tempoRestante = DURACAO_RONDA;
+  contagem = CONTAGEM_INICIAL;
+  tempoAteProximo = random(1.2, 2.4);
+  pontos = 0;
+  totalDesligados = 0;
+  totalLigados = 0;
+
+  // alguns equipamentos já começam ligados, escolhidos ao acaso
+  const quantos = max(2, round(equipamentos.length * FRACAO_LIGADOS_INICIO));
+  const baralhados = shuffle(equipamentos.slice());
+  for (let i = 0; i < quantos; i++) {
+    ligarEquipamento(baralhados[i]);
+  }
+
+  estado = 'jogo';
+}
+
+function ligarEquipamento(eq) {
+  eq.ligado = true;
+  eq.animacao = 1;
+  totalLigados++;
+}
+
+function desligarEquipamento(eq) {
+  eq.ligado = false;
+  eq.animacao = 1;
+  pontos += PONTOS_POR_EQUIPAMENTO;
+  totalDesligados++;
+}
+
+function atualizarRonda(dt) {
+  for (const eq of equipamentos) {
+    eq.atualizar(dt);
+  }
+
+  // contagem "3, 2, 1" antes de o tempo começar a contar
+  if (contagem > 0) {
+    contagem -= dt;
+    return;
+  }
+
+  tempoRestante -= dt;
+
+  // de vez em quando liga-se mais um equipamento que estava desligado
+  tempoAteProximo -= dt;
+  if (tempoAteProximo <= 0) {
+    const desligados = equipamentos.filter((eq) => !eq.ligado);
+    const ligadosAgora = equipamentos.length - desligados.length;
+    const limite = ceil(equipamentos.length * FRACAO_LIGADOS_MAXIMO);
+
+    if (ligadosAgora < limite && desligados.length > 0) {
+      ligarEquipamento(random(desligados));
+    }
+
+    // casas com mais equipamentos ligam-nos mais depressa
+    tempoAteProximo = random(INTERVALO_LIGAR[0], INTERVALO_LIGAR[1]) * sqrt(4 / equipamentos.length);
+  }
+
+  if (tempoRestante <= 0) {
+    estado = 'resultado';
+  }
+}
+
+
+// ---------------------------------------------------------------------
+// 6. ECRÃ DO MENU
 // ---------------------------------------------------------------------
 
 function desenharMenu() {
@@ -285,7 +481,7 @@ function desenharCartao(tipologia, indice) {
   for (const [codigo, tipo, coluna, linha, largura, altura] of tipologia.divisoes) {
     stroke(COR.escuro);
     strokeWeight(2);
-    fill(COR_DIVISAO[tipo]);
+    fill(TIPOS_DIVISAO[tipo].parede);
     rect(15 + coluna * 10, 44 + linha * 10, largura * 10, altura * 10);
     escrever(codigo, 15 + (coluna + largura / 2) * 10, 47 + (linha + altura / 2) * 10, 9, COR.escuro);
   }
@@ -304,23 +500,118 @@ function desenharCartao(tipologia, indice) {
   pop();
 }
 
-function comecar() {
-  estado = 'jogo';
+
+// ---------------------------------------------------------------------
+// 7. ECRÃ DA RONDA
+// ---------------------------------------------------------------------
+
+function desenharRonda() {
+  image(imgCeu, 0, 0, LARGURA, ALTURA);
+  escurecerFundo(0.92, 0.85, 0.7, 546);
+
+  edificio.desenhar();
+  desenharPainel();
+  desenharMira();
+
+  // contagem inicial por cima de tudo
+  if (contagem > 0) {
+    fill(10, 28, 22, 150);
+    rect(0, 0, LARGURA, 512);
+    escreverTitulo(String(ceil(contagem)), LARGURA / 2, 300, 140);
+    escrever('Prepara-te!  Clica nos equipamentos ligados', LARGURA / 2, 350, 18, COR.branco);
+    escrever('Desliga tudo o que tiver o alerta vermelho', LARGURA / 2, 378, 15, COR.verdeClaro);
+  }
+}
+
+// Mira no lugar do cursor: fica amarela e maior quando está por cima de um equipamento ligado
+function desenharMira() {
+  if (!ratoMexeu || mouseY > 512) return;
+
+  const temAlvo = contagem <= 0 && equipamentoSobORato() !== null;
+  const cor = temAlvo ? COR.amarelo : COR.verde;
+  const diametro = temAlvo ? 36 : 30;
+
+  noFill();
+  // primeiro um contorno escuro e grosso, depois a cor por cima, para se ver em qualquer parede
+  for (const [corTraco, espessura] of [[COR.fundoEscuro, 6], [cor, 3]]) {
+    stroke(corTraco);
+    strokeWeight(espessura);
+    circle(mouseX, mouseY, diametro);
+    line(mouseX - 22, mouseY, mouseX - 8, mouseY);
+    line(mouseX + 8, mouseY, mouseX + 22, mouseY);
+    line(mouseX, mouseY - 22, mouseX, mouseY - 8);
+    line(mouseX, mouseY + 8, mouseX, mouseY + 22);
+  }
+  noStroke();
+}
+
+// Barra pequena com fundo transparente (tempo e consumo)
+function desenharBarra(x, largura, fracao, cor) {
+  fill(255, 255, 255, 30);
+  rect(x, 38, largura, 10);
+  fill(cor);
+  rect(x, 38, largura * constrain(fracao, 0, 1), 10);
+}
+
+// Painel de cima (tempo, pontos, ligados, consumo) e faixa de baixo
+function desenharPainel() {
+  const ligados = equipamentos.filter((eq) => eq.ligado);
+  const consumoAgora = ligados.reduce((soma, eq) => soma + eq.potencia, 0);
+  const consumoMaximo = equipamentos.reduce((soma, eq) => soma + eq.potencia, 0);
+  const fracaoConsumo = consumoAgora / consumoMaximo;
+  const tempoCritico = tempoRestante <= 10 && contagem <= 0;
+
+  fill(10, 28, 22, 245);
+  rect(0, 0, LARGURA, 64);
+  fill(COR.amarelo);
+  rect(0, 62, LARGURA, 3);
+
+  // tempo: nos últimos 10 segundos pisca entre laranja e vermelho
+  let corTempo = COR.branco;
+  if (tempoCritico) {
+    corTempo = floor(millis() / 250) % 2 ? COR.laranja : COR.vermelho;
+  }
+  escrever('TEMPO', 24, 22, 12, COR.verdeClaro, LEFT);
+  escrever(ceil(max(0, tempoRestante)) + 's', 24, 52, 34, corTempo, LEFT);
+  desenharBarra(110, 120, tempoRestante / DURACAO_RONDA, tempoCritico ? COR.vermelho : COR.verde);
+
+  escrever('PONTOS', 270, 22, 12, COR.verdeClaro, LEFT);
+  escrever(String(pontos), 270, 52, 34, COR.amarelo, LEFT);
+
+  escrever('LIGADOS', 430, 22, 12, COR.verdeClaro, LEFT);
+  escrever(ligados.length + '/' + equipamentos.length, 430, 52, 34, ligados.length > 0 ? COR.laranja : COR.verde, LEFT);
+
+  // consumo: a barra fica laranja acima de 30% e vermelha acima de 60%
+  let corConsumo = COR.verde;
+  if (fracaoConsumo > 0.6) corConsumo = COR.vermelho;
+  else if (fracaoConsumo > 0.3) corConsumo = COR.laranja;
+  escrever('CONSUMO SIMULADO', 600, 22, 12, COR.verdeClaro, LEFT);
+  escrever(formatarKW(consumoAgora), 600, 52, 28, COR.branco, LEFT);
+  desenharBarra(790, 210, fracaoConsumo, corConsumo);
+
+  // faixa de baixo
+  fill(10, 28, 22, 245);
+  rect(0, 512, LARGURA, 34);
+  escrever('Clica nos equipamentos com o alerta vermelho para os desligar', 32, 534, 13, COR.verdeClaro, LEFT);
 }
 
 
 // ---------------------------------------------------------------------
-// 6. ECRÃ DE JOGO (PROVISÓRIO)
-// O edifício e os equipamentos entram na próxima etapa.
+// 8. ECRÃ DE RESULTADO
 // ---------------------------------------------------------------------
 
-function desenharJogoProvisorio() {
+function desenharResultado() {
   const tipologia = TIPOLOGIAS[tipologiaEscolhida];
+  const centro = LARGURA / 2;
 
-  desenharCaixa(262, 150, 500, 260, 'rgba(10, 28, 22, 0.94)', COR.amarelo);
-  escreverTitulo(tipologia.id + ' · ' + tipologia.descricao, LARGURA / 2, 210, 30);
-  escrever(tipologia.divisoes.length + ' divisões · ' + tipologia.equipamentos + ' equipamentos', LARGURA / 2, 246, 15, COR.verdeClaro);
-  escrever('Ronda de jogo em desenvolvimento', LARGURA / 2, 290, 15, COR.branco);
+  desenharCaixa(212, 76, 600, 424, 'rgba(10, 28, 22, 0.94)', COR.amarelo);
+  escreverTitulo('RONDA TERMINADA', centro, 124, 30);
+  escrever(tipologia.id + ' · ' + tipologia.descricao, centro, 148, 14, COR.verdeClaro);
 
-  desenharBotao(BOTAO_VOLTAR, 'VOLTAR', () => (estado = 'menu'), true, 16);
+  escrever('PONTUAÇÃO', centro, 184, 13, COR.verdeClaro);
+  escrever(String(pontos), centro, 232, 52, COR.amarelo);
+  escrever('Equipamentos desligados: ' + totalDesligados + ' de ' + totalLigados, centro, 286, 15, COR.branco);
+
+  desenharBotao(BOTAO_JOGAR_NOVAMENTE, 'JOGAR NOVAMENTE', novaRonda);
+  desenharBotao(BOTAO_MENU, 'MENU', () => (estado = 'menu'), true, 16);
 }
