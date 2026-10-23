@@ -2,13 +2,15 @@
 // Eco Building — Eficiência energética num edifício
 // Sistemas Multimédia | ECGM | 2026/2027 | Paulo Monteiro (32441)
 //
-// Etapa 2: o edifício e a ronda de jogo.
-// O jogador escolhe a tipologia, aparece a casa com as divisões e os
-// equipamentos, e tem 60 segundos para clicar nos que estão ligados.
+// Etapa 3: o microfone e o Eco-Pulso.
+// Antes da ronda o microfone é calibrado. Durante a ronda, um som curto
+// (por exemplo, uma palma) lança um Eco-Pulso a partir do cursor.
 //
 // Classes (pasta classes/):
 //   Edificio    — cria as divisões e decide onde fica cada equipamento
 //   Equipamento — um equipamento ligado ou desligado
+//   Microfone   — autorização, calibração e deteção de sons curtos
+//   EcoPulso    — o círculo lançado pelo som e as colisões
 // =====================================================================
 
 
@@ -31,6 +33,18 @@ const FRACAO_LIGADOS_INICIO = 0.4;   // 40% começam ligados
 const FRACAO_LIGADOS_MAXIMO = 0.7;   // nunca mais de 70% ligados ao mesmo tempo
 const INTERVALO_LIGAR = [1.6, 3.0];  // segundos entre cada equipamento que se liga
 
+// Microfone (valores do relatório: dispara acima de 0,18 e só rearma abaixo de 0,10)
+const CALIBRACAO_MS = 2000;          // tempo de silêncio para medir o ruído da sala
+const MARGEM_INICIAL = 0.18;         // quanto acima do ruído da sala tem de estar o som
+const FOLGA_HISTERESE = 0.08;        // diferença entre o limite de disparo e o de rearme
+const MARGEM_MINIMA = 0.10;
+const MARGEM_MAXIMA = 0.40;
+
+// Eco-Pulso
+const PULSO_DURACAO = 0.55;          // segundos até atingir o tamanho máximo
+const PULSO_RAIO_MINIMO = 45;        // px, com um som fraco
+const PULSO_RAIO_MAXIMO = 110;       // px, com um som forte
+
 // Posição da planta da casa no ecrã: cada quadrado da grelha 12 x 8 mede 80 x 54 px
 const PLANTA_X = 32;
 const PLANTA_Y = 72;
@@ -49,6 +63,7 @@ const COR = {
   amarelo: '#ffd54a',
   fundoEscuro: '#0a1c16',
   vermelho: '#d64541',
+  cinza: '#8c94a0',
 };
 
 // Tipos de divisão.
@@ -138,13 +153,18 @@ const CARTAO_Y = 132;
 const BOTAO_COMECAR = { x: 382, y: 352, w: 260, h: 56 };
 const BOTAO_JOGAR_NOVAMENTE = { x: 262, y: 430, w: 280, h: 52 };
 const BOTAO_MENU = { x: 562, y: 430, w: 200, h: 52 };
+const BOTAO_COMECAR_RONDA = { x: 362, y: 400, w: 300, h: 48 };
+const BOTAO_RECALIBRAR = { x: 232, y: 460, w: 200, h: 34 };    // também usado para "SÓ COM O RATO"
+const BOTAO_VOLTAR = { x: 592, y: 460, w: 200, h: 34 };
+const BOTAO_MENOS = { x: 612, y: 326, w: 34, h: 26 };
+const BOTAO_MAIS = { x: 654, y: 326, w: 34, h: 26 };
 
 
 // ---------------------------------------------------------------------
 // 2. ESTADO DO JOGO
 // ---------------------------------------------------------------------
 
-let estado = 'menu';          // 'menu', 'jogo' ou 'resultado'
+let estado = 'menu';          // 'menu', 'calibracao', 'jogo' ou 'resultado'
 let tipologiaEscolhida = 1;   // índice em TIPOLOGIAS (começa no T1)
 let areasClicaveis = [];      // botões e cartões desenhados no frame atual
 let ratoMexeu = false;        // a mira só aparece depois de o rato se mexer
@@ -164,6 +184,9 @@ let tempoAteProximo = 0;      // segundos até se ligar mais um equipamento
 let pontos = 0;
 let totalDesligados = 0;
 let totalLigados = 0;
+let pulsos = [];              // Eco-Pulsos ativos
+
+const microfone = new Microfone();
 
 
 // ---------------------------------------------------------------------
@@ -202,6 +225,7 @@ function setup() {
 function draw() {
   // tempo desde o último frame, em segundos (limitado para não dar saltos se a janela perder o foco)
   const dt = min(deltaTime / 1000, 0.1);
+  microfone.lerNivel(dt);
 
   // As áreas clicáveis são registadas de novo em cada frame, ao desenhar os botões
   areasClicaveis = [];
@@ -210,8 +234,10 @@ function draw() {
     atualizarRonda(dt);
     desenharRonda();
   } else {
+    if (estado === 'calibracao') microfone.atualizarCalibracao(dt);
     desenharCenario();
     if (estado === 'menu') desenharMenu();
+    if (estado === 'calibracao') desenharCalibracao();
     if (estado === 'resultado') desenharResultado();
   }
   desenharRodape();
@@ -232,6 +258,7 @@ function mouseMoved() {
 
 function mousePressed() {
   ratoMexeu = true;
+  userStartAudio(); // o navegador só deixa usar o som e o microfone depois de um clique
 
   // primeiro os botões
   for (const area of areasClicaveis) {
@@ -268,6 +295,10 @@ function equipamentoSobORato() {
 
 function formatarKW(valor) {
   return valor.toFixed(2).replace('.', ',') + ' kW';
+}
+
+function formatarNumero(valor) {
+  return valor.toFixed(2).replace('.', ',');
 }
 
 // Escreve um texto com tamanho, cor e alinhamento
@@ -354,7 +385,9 @@ function desenharRodape() {
 // ---------------------------------------------------------------------
 
 function comecar() {
-  novaRonda();
+  // antes da ronda, o microfone tem de ser autorizado e calibrado
+  estado = 'calibracao';
+  microfone.pedirAcesso();
 }
 
 function novaRonda() {
@@ -368,6 +401,7 @@ function novaRonda() {
   pontos = 0;
   totalDesligados = 0;
   totalLigados = 0;
+  pulsos = [];
 
   // alguns equipamentos já começam ligados, escolhidos ao acaso
   const quantos = max(2, round(equipamentos.length * FRACAO_LIGADOS_INICIO));
@@ -400,6 +434,7 @@ function atualizarRonda(dt) {
   // contagem "3, 2, 1" antes de o tempo começar a contar
   if (contagem > 0) {
     contagem -= dt;
+    microfone.armado = false; // um som durante a contagem não deve lançar um pulso logo no início
     return;
   }
 
@@ -419,6 +454,15 @@ function atualizarRonda(dt) {
     // casas com mais equipamentos ligam-nos mais depressa
     tempoAteProximo = random(INTERVALO_LIGAR[0], INTERVALO_LIGAR[1]) * sqrt(4 / equipamentos.length);
   }
+
+  // um som curto lança um Eco-Pulso a partir do cursor
+  if (microfone.detetouSom()) {
+    pulsos.push(new EcoPulso(mouseX, mouseY, microfone.nivel));
+  }
+  for (const pulso of pulsos) {
+    pulso.atualizar(dt, equipamentos, desligarEquipamento);
+  }
+  pulsos = pulsos.filter((pulso) => pulso.ativo);
 
   if (tempoRestante <= 0) {
     estado = 'resultado';
@@ -442,10 +486,24 @@ function desenharMenu() {
 
   desenharBotao(BOTAO_COMECAR, 'COMEÇAR', comecar, false, 24);
 
+  // estado do microfone, com um ponto verde (pronto), vermelho (sem permissão) ou amarelo (por calibrar)
+  stroke(COR.verde);
+  strokeWeight(2);
+  fill(10, 28, 22, 235);
+  rect(LARGURA / 2 - 150, 426, 300, 28, 14);
+  noStroke();
+
+  let corEstado = COR.amarelo;
+  if (microfone.estadoTexto === 'pronto' || microfone.estadoTexto === 'calibrado') corEstado = COR.verde;
+  if (microfone.estadoTexto === 'sem permissão') corEstado = COR.vermelho;
+  fill(corEstado);
+  circle(LARGURA / 2 - 132, 440, 10);
+  escrever('Microfone: ' + microfone.estadoTexto, LARGURA / 2 - 114, 445, 13, COR.branco, LEFT);
+
   // faixa com a instrução principal do jogo
   fill(10, 28, 22, 225);
   rect(LARGURA / 2 - 330, 464, 660, 26, 13);
-  escrever('Clica nos equipamentos ligados para os desligar antes que o tempo acabe', LARGURA / 2, 482, 13, COR.branco);
+  escrever('Clica nos equipamentos ligados ou faz uma palma para lançar o Eco-Pulso', LARGURA / 2, 482, 13, COR.branco);
 }
 
 // Cartão de uma tipologia: nome, planta das divisões e resumo.
@@ -510,6 +568,7 @@ function desenharRonda() {
   escurecerFundo(0.92, 0.85, 0.7, 546);
 
   edificio.desenhar();
+  for (const pulso of pulsos) pulso.desenhar();
   desenharPainel();
   desenharMira();
 
@@ -518,17 +577,20 @@ function desenharRonda() {
     fill(10, 28, 22, 150);
     rect(0, 0, LARGURA, 512);
     escreverTitulo(String(ceil(contagem)), LARGURA / 2, 300, 140);
-    escrever('Prepara-te!  Clica nos equipamentos ligados', LARGURA / 2, 350, 18, COR.branco);
+    escrever('Prepara-te!  Clica nos equipamentos ligados ou faz uma palma', LARGURA / 2, 350, 18, COR.branco);
     escrever('Desliga tudo o que tiver o alerta vermelho', LARGURA / 2, 378, 15, COR.verdeClaro);
   }
 }
 
-// Mira no lugar do cursor: fica amarela e maior quando está por cima de um equipamento ligado
+// Mira no lugar do cursor: amarela por cima de um equipamento ligado,
+// verde quando o Eco-Pulso está pronto e vermelha enquanto recarrega
 function desenharMira() {
   if (!ratoMexeu || mouseY > 512) return;
 
   const temAlvo = contagem <= 0 && equipamentoSobORato() !== null;
-  const cor = temAlvo ? COR.amarelo : COR.verde;
+  let cor = COR.vermelho;
+  if (temAlvo) cor = COR.amarelo;
+  else if (microfone.armado || microfone.desligado || contagem > 0) cor = COR.verde;
   const diametro = temAlvo ? 36 : 30;
 
   noFill();
@@ -592,7 +654,21 @@ function desenharPainel() {
   // faixa de baixo
   fill(10, 28, 22, 245);
   rect(0, 512, LARGURA, 34);
-  escrever('Clica nos equipamentos com o alerta vermelho para os desligar', 32, 534, 13, COR.verdeClaro, LEFT);
+
+  // nível do som, estado do Eco-Pulso
+  escrever('SOM', 32, 534, 13, COR.verdeClaro, LEFT);
+  microfone.desenharBarra(80, 522, 420, 14);
+
+  const pronto = microfone.armado && contagem <= 0;
+  let corPulso = pronto ? COR.verde : COR.vermelho;
+  let textoPulso = pronto ? 'ECO-PULSO PRONTO' : 'A RECARREGAR…';
+  if (microfone.desligado) {
+    corPulso = COR.cinza;
+    textoPulso = 'MICROFONE DESLIGADO';
+  }
+  fill(corPulso);
+  circle(530, 529, 10);
+  escrever(textoPulso, 544, 534, 13, corPulso, LEFT);
 }
 
 
@@ -614,4 +690,82 @@ function desenharResultado() {
 
   desenharBotao(BOTAO_JOGAR_NOVAMENTE, 'JOGAR NOVAMENTE', novaRonda);
   desenharBotao(BOTAO_MENU, 'MENU', () => (estado = 'menu'), true, 16);
+}
+
+
+// ---------------------------------------------------------------------
+// 9. ECRÃ DE CALIBRAÇÃO DO MICROFONE
+// ---------------------------------------------------------------------
+
+function desenharCalibracao() {
+  const tipologia = TIPOLOGIAS[tipologiaEscolhida];
+  const centro = LARGURA / 2;
+
+  desenharCaixa(212, 96, 600, 408, 'rgba(10, 28, 22, 0.94)', COR.amarelo);
+  escreverTitulo('CALIBRAÇÃO DO MICROFONE', centro, 140, 26);
+  escrever(tipologia.id + ' · ' + tipologia.descricao + ' · ' + tipologia.equipamentos + ' equipamentos', centro, 166, 14, COR.verdeClaro);
+
+  if (microfone.fase === 'pedir') {
+    // à espera que o jogador aceite o pedido do navegador
+    escrever('Autoriza o microfone no navegador', centro, 250, 20, COR.branco);
+    escrever('(aparece um pedido junto à barra de endereço)', centro, 278, 13, COR.verdeClaro);
+  } else if (microfone.fase === 'medir') {
+    // 2 segundos de silêncio, com contagem e barra de progresso
+    const segundosQueFaltam = max(1, ceil((CALIBRACAO_MS - microfone.tempoMedicao) / 1000));
+    escrever('Fica em silêncio…', centro, 222, 22, COR.amarelo);
+    escrever('A medir o ruído ambiente', centro, 248, 13, COR.verdeClaro);
+    escrever(String(segundosQueFaltam), centro, 330, 64, COR.branco);
+
+    fill(255, 255, 255, 30);
+    rect(272, 352, 480, 12);
+    fill(COR.verde);
+    rect(272, 352, 480 * min(1, microfone.tempoMedicao / CALIBRACAO_MS), 12);
+    microfone.desenharBarra(272, 388, 480, 16);
+  } else if (microfone.fase === 'pronta') {
+    // calibração feita: o jogador pode testar uma palma e ajustar a sensibilidade
+    escrever('Calibração concluída', centro, 206, 20, COR.verde);
+    escrever('Faz uma palma para testar', centro, 230, 15, COR.branco);
+
+    microfone.desenharBarra(272, 246, 480, 22);
+    if (microfone.brilhoTeste > 0) {
+      fill(82, 183, 136, 255 * microfone.brilhoTeste);
+      rect(272, 246, 480, 22);
+    }
+    escrever('amarelo = dispara', 272, 290, 12, COR.amarelo, LEFT);
+    escrever('verde = rearma', 752, 290, 12, COR.verdeClaro, RIGHT);
+
+    const valores = 'Ruído: ' + formatarNumero(microfone.ruidoBase) +
+      '  ·  Dispara: ' + formatarNumero(microfone.limiteDisparo) +
+      '  ·  Rearma: ' + formatarNumero(microfone.limiteRearme);
+    escrever(valores, centro, 314, 13, COR.branco);
+
+    escrever('Sensibilidade: ' + microfone.sensibilidade + ' / 16', 600, 345, 15, COR.verdeClaro, RIGHT);
+    desenharBotao(BOTAO_MENOS, '−', () => microfone.ajustarSensibilidade(-1), true, 18);
+    desenharBotao(BOTAO_MAIS, '+', () => microfone.ajustarSensibilidade(1), true, 18);
+
+    if (microfone.palmasDetetadas > 0) {
+      escrever('Palma detetada ✓  (' + microfone.palmasDetetadas + ')', centro, 382, 13, COR.verde);
+    } else {
+      escrever('Ainda sem palmas', centro, 382, 13, COR.cinza);
+    }
+
+    desenharBotao(BOTAO_COMECAR_RONDA, 'COMEÇAR RONDA', novaRonda);
+    desenharBotao(BOTAO_RECALIBRAR, 'RECALIBRAR', () => microfone.comecarMedicao(), true, 14);
+  } else {
+    // o jogador recusou o microfone: pode tentar outra vez ou jogar só com o rato
+    escrever('Microfone sem permissão', centro, 236, 24, COR.vermelho);
+    escrever('Sem microfone não é possível lançar o Eco-Pulso.', centro, 272, 15, COR.branco);
+    escrever('Permite o acesso (ícone junto ao endereço) e tenta de novo,', centro, 296, 15, COR.branco);
+    escrever('ou joga só com o rato, clicando nos equipamentos.', centro, 320, 15, COR.branco);
+
+    desenharBotao(BOTAO_COMECAR_RONDA, 'TENTAR DE NOVO', () => microfone.pedirAcesso());
+    desenharBotao(BOTAO_RECALIBRAR, 'SÓ COM O RATO', () => {
+      microfone.desligado = true;
+      novaRonda();
+    }, true, 14);
+  }
+
+  if (microfone.fase !== 'medir') {
+    desenharBotao(BOTAO_VOLTAR, 'VOLTAR', () => (estado = 'menu'), true, 14);
+  }
 }
