@@ -19,6 +19,7 @@ class Microfone {
     this.armado = false;            // pronto para disparar outra vez?
     this.palmasDetetadas = 0;       // contador do teste na calibração
     this.brilhoTeste = 0;           // flash verde quando o teste deteta uma palma
+    this.bloqueadoAte = 0;          // enquanto o jogo toca um som, o microfone é ignorado
   }
 
   // Dispara quando o som passa o ruído da sala mais a margem (0,18 por defeito)
@@ -104,7 +105,7 @@ class Microfone {
   // Histerese: devolve true só no frame em que o som passa o limite de disparo.
   // Depois disso fica desarmado até o som descer abaixo do limite de rearme.
   detetouSom() {
-    if (this.desligado) {
+    if (this.desligado || millis() < this.bloqueadoAte) {
       this.armado = false;
       return false;
     }
@@ -116,6 +117,11 @@ class Microfone {
       this.armado = true;
     }
     return false;
+  }
+
+  // Ignora o microfone durante algum tempo (usado quando o próprio jogo toca um som)
+  bloquearDurante(ms) {
+    this.bloqueadoAte = max(this.bloqueadoAte, millis() + ms);
   }
 
   // Barra do nível de som com as marcas dos dois limites (amarelo = dispara, verde = rearma)

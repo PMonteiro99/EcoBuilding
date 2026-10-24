@@ -2,9 +2,9 @@
 // Eco Building — Eficiência energética num edifício
 // Sistemas Multimédia | ECGM | 2026/2027 | Paulo Monteiro (32441)
 //
-// Etapa 3: o microfone e o Eco-Pulso.
-// Antes da ronda o microfone é calibrado. Durante a ronda, um som curto
-// (por exemplo, uma palma) lança um Eco-Pulso a partir do cursor.
+// Etapa 4: sons e efeitos visuais.
+// Sons sintetizados com p5.sound (acerto e fim de ronda) e efeitos
+// de feedback: faíscas, "+10" e um anel quando um equipamento se liga.
 //
 // Classes (pasta classes/):
 //   Edificio    — cria as divisões e decide onde fica cada equipamento
@@ -171,9 +171,11 @@ let ratoMexeu = false;        // a mira só aparece depois de o rato se mexer
 
 // Imagens
 let imgCeu, imgFolha, imgAlerta;
+let imgFaiscas;
 let imgEdificios = [];
 let imgEquipamentos = {};     // ex.: imgEquipamentos['lamp_on']
 let imgMoveis = {};           // ex.: imgMoveis['sofa']
+let framesFaisca = [];        // as 4 imagens da animação das faíscas
 
 // Dados da ronda atual
 let edificio = null;
@@ -185,8 +187,10 @@ let pontos = 0;
 let totalDesligados = 0;
 let totalLigados = 0;
 let pulsos = [];              // Eco-Pulsos ativos
+let efeitos = [];             // faíscas, "+10", anéis e avisos ativos
 
 const microfone = new Microfone();
+let oscilador, envelope;      // criados no primeiro som (o navegador só deixa tocar depois de um clique)
 
 
 // ---------------------------------------------------------------------
@@ -197,6 +201,7 @@ function preload() {
   imgCeu = loadImage(PASTA_IMAGENS + 'backgrounds/bg_menu_sky.png');
   imgFolha = loadImage(PASTA_IMAGENS + 'ui/icon_leaf.png');
   imgAlerta = loadImage(PASTA_IMAGENS + 'devices/alert_badge.png');
+  imgFaiscas = loadImage(PASTA_IMAGENS + 'fx/spark_sheet_4x32.png');
 
   for (const nome of ['apartamento', 'moradia', 'escritorio', 'escola']) {
     imgEdificios.push(loadImage(PASTA_IMAGENS + 'buildings/' + nome + '.png'));
@@ -220,6 +225,11 @@ function setup() {
   noSmooth(); // mantém o pixel art nítido quando as imagens são ampliadas
   textFont('Courier New');
   textStyle(BOLD);
+
+  // a imagem das faíscas tem 4 quadros lado a lado, de 32 x 32 px
+  for (let i = 0; i < 4; i++) {
+    framesFaisca.push(imgFaiscas.get(i * 32, 0, 32, 32));
+  }
 }
 
 function draw() {
@@ -308,6 +318,17 @@ function escrever(texto, x, y, tamanho, cor, alinhamento = CENTER) {
   textSize(tamanho);
   textAlign(alinhamento, BASELINE);
   text(texto, x, y);
+}
+
+// Texto com contorno escuro, para se ler por cima de qualquer cor (usado no "+10")
+function escreverComContorno(texto, x, y, tamanho, cor) {
+  stroke(COR.escuro);
+  strokeWeight(max(3, tamanho / 6));
+  fill(cor);
+  textSize(tamanho);
+  textAlign(CENTER, BASELINE);
+  text(texto, x, y);
+  noStroke();
 }
 
 // Título com uma sombra verde por trás, para se destacar do fundo
@@ -409,6 +430,7 @@ function novaRonda() {
   for (let i = 0; i < quantos; i++) {
     ligarEquipamento(baralhados[i]);
   }
+  efeitos = []; // os anéis dos equipamentos que já começam ligados não aparecem
 
   estado = 'jogo';
 }
@@ -417,19 +439,26 @@ function ligarEquipamento(eq) {
   eq.ligado = true;
   eq.animacao = 1;
   totalLigados++;
+  efeitos.push({ tipo: 'anel', x: eq.x, y: eq.y, tempo: 0 });
 }
 
-function desligarEquipamento(eq) {
+// acertoNoPulso: 0 para o primeiro equipamento apanhado por um pulso, 1 para o segundo, ...
+function desligarEquipamento(eq, acertoNoPulso = 0) {
   eq.ligado = false;
   eq.animacao = 1;
   pontos += PONTOS_POR_EQUIPAMENTO;
   totalDesligados++;
+
+  efeitos.push({ tipo: 'faisca', x: eq.x, y: eq.y, tempo: 0 });
+  efeitos.push({ tipo: 'texto', x: eq.x, y: eq.y - 30, tempo: 0 });
+  somAcerto(acertoNoPulso);
 }
 
 function atualizarRonda(dt) {
   for (const eq of equipamentos) {
     eq.atualizar(dt);
   }
+  atualizarEfeitos(dt);
 
   // contagem "3, 2, 1" antes de o tempo começar a contar
   if (contagem > 0) {
@@ -465,6 +494,7 @@ function atualizarRonda(dt) {
   pulsos = pulsos.filter((pulso) => pulso.ativo);
 
   if (tempoRestante <= 0) {
+    somFimRonda();
     estado = 'resultado';
   }
 }
@@ -569,6 +599,7 @@ function desenharRonda() {
 
   edificio.desenhar();
   for (const pulso of pulsos) pulso.desenhar();
+  desenharEfeitos();
   desenharPainel();
   desenharMira();
 
@@ -767,5 +798,78 @@ function desenharCalibracao() {
 
   if (microfone.fase !== 'medir') {
     desenharBotao(BOTAO_VOLTAR, 'VOLTAR', () => (estado = 'menu'), true, 14);
+  }
+}
+
+
+// ---------------------------------------------------------------------
+// 10. SONS E EFEITOS VISUAIS
+// ---------------------------------------------------------------------
+
+// Toca uma sequência de notas [frequência em Hz, atraso em ms] com um oscilador do p5.sound
+function tocarNotas(notas) {
+  if (!oscilador) {
+    oscilador = new p5.Oscillator('triangle');
+    envelope = new p5.Envelope();
+    envelope.setADSR(0.005, 0.12, 0, 0.05); // ataque rápido, som curto
+    envelope.setRange(0.22, 0);              // volume baixo
+    oscilador.amp(envelope);
+    oscilador.start();
+  }
+
+  // enquanto o som toca, o microfone é ignorado (senão o próprio jogo lançava pulsos)
+  const duracao = notas[notas.length - 1][1] + 450;
+  microfone.bloquearDurante(duracao);
+
+  for (const [frequencia, atraso] of notas) {
+    setTimeout(() => {
+      oscilador.freq(frequencia);
+      envelope.play();
+    }, atraso);
+  }
+}
+
+// Acerto: duas notas a subir; cada acerto seguido do mesmo pulso soa um pouco mais agudo
+function somAcerto(acertoNoPulso) {
+  const subida = pow(1.12, acertoNoPulso);
+  tocarNotas([[660 * subida, 0], [990 * subida, 70]]);
+}
+
+// Fim da ronda: quatro notas a descer
+function somFimRonda() {
+  tocarNotas([[784, 0], [659, 150], [523, 300], [392, 450]]);
+}
+
+// Cada efeito dura 1 segundo (o aviso de nível dura 1,8 s)
+function atualizarEfeitos(dt) {
+  for (const efeito of efeitos) {
+    efeito.tempo += dt;
+  }
+  efeitos = efeitos.filter((efeito) => efeito.tempo < 1);
+}
+
+function desenharEfeitos() {
+  for (const efeito of efeitos) {
+    const { x, y, tempo } = efeito;
+
+    if (efeito.tipo === 'faisca' && tempo < 0.5) {
+      // muda de quadro a cada 0,12 s
+      const quadro = min(3, floor(tempo / 0.12));
+      image(framesFaisca[quadro], x - 48, y - 48, 96, 96);
+    }
+
+    if (efeito.tipo === 'texto') {
+      // "+10" que sobe e desaparece
+      escreverComContorno('+' + PONTOS_POR_EQUIPAMENTO, x, y - tempo * 40, 26, color(255, 213, 74, 255 * (1 - tempo)));
+    }
+
+    if (efeito.tipo === 'anel') {
+      // anel vermelho que cresce quando um equipamento se liga
+      noFill();
+      stroke(214, 69, 65, 255 * (1 - tempo));
+      strokeWeight(4);
+      circle(x, y, 40 + tempo * 80);
+      noStroke();
+    }
   }
 }
