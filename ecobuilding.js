@@ -2,9 +2,9 @@
 // Eco Building — Eficiência energética num edifício
 // Sistemas Multimédia | ECGM | 2026/2027 | Paulo Monteiro (32441)
 //
-// Etapa 4: sons e efeitos visuais.
-// Sons sintetizados com p5.sound (acerto e fim de ronda) e efeitos
-// de feedback: faíscas, "+10" e um anel quando um equipamento se liga.
+// Etapa 5: dificuldade crescente, pausa e resultado.
+// Os equipamentos ligam-se cada vez mais depressa (4 níveis), há pausa
+// e o resultado mostra o consumo evitado e uma sugestão de poupança.
 //
 // Classes (pasta classes/):
 //   Edificio    — cria as divisões e decide onde fica cada equipamento
@@ -32,6 +32,12 @@ const RAIO_CLIQUE = 30;              // distância (px) ao centro do equipamento
 const FRACAO_LIGADOS_INICIO = 0.4;   // 40% começam ligados
 const FRACAO_LIGADOS_MAXIMO = 0.7;   // nunca mais de 70% ligados ao mesmo tempo
 const INTERVALO_LIGAR = [1.6, 3.0];  // segundos entre cada equipamento que se liga
+
+// Dificuldade crescente: no fim da ronda os equipamentos ligam-se 2,5 vezes mais depressa
+// e podem estar até 90% ligados. O nível sobe a cada 15 segundos (4 níveis).
+const ACELERACAO_FINAL = 2.5;
+const FRACAO_LIGADOS_FIM = 0.9;
+const NIVEIS = 4;
 
 // Microfone (valores do relatório: dispara acima de 0,18 e só rearma abaixo de 0,10)
 const CALIBRACAO_MS = 2000;          // tempo de silêncio para medir o ruído da sala
@@ -108,11 +114,24 @@ const TIPOS_DIVISAO = {
 //   local: 'teto' (lâmpada pendurada), 'parede' (no alto) ou 'chao' (em cima de um móvel)
 //   maximo: quantos deste tipo pode haver na mesma divisão
 //   caixa: parte visível da imagem em relação ao centro [esquerda, cima, direita, baixo]
+//   dica: sugestão de poupança mostrada no fim da ronda
 const EQUIPAMENTOS = {
-  lamp: { nome: 'Lâmpada', potencia: 0.06, local: 'teto', maximo: 2, caixa: [-16, -30, 16, 26] },
-  ac: { nome: 'Ar condicionado', potencia: 1.2, local: 'parede', maximo: 1, caixa: [-28, -24, 28, 30] },
-  tv: { nome: 'Televisão', potencia: 0.15, local: 'chao', movel: 'movel_tv', maximo: 1, caixa: [-28, -30, 28, 24] },
-  computer: { nome: 'Computador', potencia: 0.2, local: 'chao', movel: 'secretaria', maximo: 1, caixa: [-26, -26, 26, 30] },
+  lamp: {
+    nome: 'Lâmpada', potencia: 0.06, local: 'teto', maximo: 2, caixa: [-16, -30, 16, 26],
+    dica: 'Desliga as luzes das divisões vazias.',
+  },
+  ac: {
+    nome: 'Ar condicionado', potencia: 1.2, local: 'parede', maximo: 1, caixa: [-28, -24, 28, 30],
+    dica: 'Desliga o ar condicionado ao sair e mantém-no nos 24 ºC.',
+  },
+  tv: {
+    nome: 'Televisão', potencia: 0.15, local: 'chao', movel: 'movel_tv', maximo: 1, caixa: [-28, -30, 28, 24],
+    dica: 'Desliga a televisão em vez de a deixar em standby.',
+  },
+  computer: {
+    nome: 'Computador', potencia: 0.2, local: 'chao', movel: 'secretaria', maximo: 1, caixa: [-26, -26, 26, 30],
+    dica: 'Põe o computador em suspensão ou desliga-o quando sais.',
+  },
 };
 
 // Cada tipologia tem uma planta desenhada numa grelha de 12 x 8 quadrados.
@@ -158,6 +177,9 @@ const BOTAO_RECALIBRAR = { x: 232, y: 460, w: 200, h: 34 };    // também usado 
 const BOTAO_VOLTAR = { x: 592, y: 460, w: 200, h: 34 };
 const BOTAO_MENOS = { x: 612, y: 326, w: 34, h: 26 };
 const BOTAO_MAIS = { x: 654, y: 326, w: 34, h: 26 };
+const BOTAO_PAUSA = { x: 916, y: 517, w: 92, h: 24 };
+const BOTAO_CONTINUAR = { x: 362, y: 320, w: 300, h: 52 };
+const BOTAO_SAIR = { x: 412, y: 392, w: 200, h: 40 };
 
 
 // ---------------------------------------------------------------------
@@ -188,6 +210,13 @@ let totalDesligados = 0;
 let totalLigados = 0;
 let pulsos = [];              // Eco-Pulsos ativos
 let efeitos = [];             // faíscas, "+10", anéis e avisos ativos
+let pausado = false;
+let nivelAtual = 1;
+let consumoLigado = 0;        // soma dos kW de todos os equipamentos que se ligaram
+let consumoEvitado = 0;       // soma dos kW dos equipamentos desligados pelo jogador
+let desperdicio = {};         // kW x segundos que cada tipo de equipamento esteve ligado
+let resultado = null;         // dados calculados no fim da ronda
+let recordes = {};            // melhor pontuação de cada tipologia (guardada no navegador)
 
 const microfone = new Microfone();
 let oscilador, envelope;      // criados no primeiro som (o navegador só deixa tocar depois de um clique)
@@ -230,6 +259,18 @@ function setup() {
   for (let i = 0; i < 4; i++) {
     framesFaisca.push(imgFaiscas.get(i * 32, 0, 32, 32));
   }
+
+  // recordes guardados em jogos anteriores (se o navegador o permitir)
+  try {
+    recordes = JSON.parse(localStorage.getItem('ecoBuilding_recordes')) || {};
+  } catch (erro) {
+    recordes = {};
+  }
+
+  // se a janela perder o foco a meio da ronda, o jogo fica em pausa
+  window.addEventListener('blur', () => {
+    if (estado === 'jogo' && contagem <= 0) pausado = true;
+  });
 }
 
 function draw() {
@@ -253,7 +294,7 @@ function draw() {
   desenharRodape();
 
   // Durante a ronda o cursor normal é escondido e substituído pela mira
-  if (estado === 'jogo' && mouseY < 512) {
+  if (estado === 'jogo' && !pausado && mouseY < 512) {
     noCursor();
   } else if (ratoSobreAlgoClicavel()) {
     cursor(HAND);
@@ -279,7 +320,7 @@ function mousePressed() {
   }
 
   // depois, durante a ronda, o clique num equipamento ligado desliga-o
-  if (estado === 'jogo' && contagem <= 0) {
+  if (estado === 'jogo' && contagem <= 0 && !pausado) {
     const alvo = equipamentoSobORato();
     if (alvo) desligarEquipamento(alvo);
   }
@@ -423,6 +464,11 @@ function novaRonda() {
   totalDesligados = 0;
   totalLigados = 0;
   pulsos = [];
+  pausado = false;
+  nivelAtual = 1;
+  consumoLigado = 0;
+  consumoEvitado = 0;
+  desperdicio = { lamp: 0, ac: 0, tv: 0, computer: 0 };
 
   // alguns equipamentos já começam ligados, escolhidos ao acaso
   const quantos = max(2, round(equipamentos.length * FRACAO_LIGADOS_INICIO));
@@ -439,6 +485,7 @@ function ligarEquipamento(eq) {
   eq.ligado = true;
   eq.animacao = 1;
   totalLigados++;
+  consumoLigado += eq.potencia;
   efeitos.push({ tipo: 'anel', x: eq.x, y: eq.y, tempo: 0 });
 }
 
@@ -448,6 +495,7 @@ function desligarEquipamento(eq, acertoNoPulso = 0) {
   eq.animacao = 1;
   pontos += PONTOS_POR_EQUIPAMENTO;
   totalDesligados++;
+  consumoEvitado += eq.potencia;
 
   efeitos.push({ tipo: 'faisca', x: eq.x, y: eq.y, tempo: 0 });
   efeitos.push({ tipo: 'texto', x: eq.x, y: eq.y - 30, tempo: 0 });
@@ -455,6 +503,8 @@ function desligarEquipamento(eq, acertoNoPulso = 0) {
 }
 
 function atualizarRonda(dt) {
+  if (pausado) return;
+
   for (const eq of equipamentos) {
     eq.atualizar(dt);
   }
@@ -469,19 +519,34 @@ function atualizarRonda(dt) {
 
   tempoRestante -= dt;
 
+  // regista o desperdício de cada tipo de equipamento (para a sugestão no fim)
+  for (const eq of equipamentos) {
+    if (eq.ligado) desperdicio[eq.tipo] += eq.potencia * dt;
+  }
+
+  // nível de 1 a 4, conforme o tempo que já passou
+  const progresso = 1 - tempoRestante / DURACAO_RONDA;
+  const novoNivel = 1 + min(NIVEIS - 1, floor(progresso * NIVEIS));
+  if (novoNivel > nivelAtual) {
+    nivelAtual = novoNivel;
+    efeitos.push({ tipo: 'nivel', tempo: 0 });
+    somNivel();
+  }
+
   // de vez em quando liga-se mais um equipamento que estava desligado
   tempoAteProximo -= dt;
   if (tempoAteProximo <= 0) {
     const desligados = equipamentos.filter((eq) => !eq.ligado);
     const ligadosAgora = equipamentos.length - desligados.length;
-    const limite = ceil(equipamentos.length * FRACAO_LIGADOS_MAXIMO);
+    const limite = ceil(equipamentos.length * lerp(FRACAO_LIGADOS_MAXIMO, FRACAO_LIGADOS_FIM, progresso));
 
     if (ligadosAgora < limite && desligados.length > 0) {
       ligarEquipamento(random(desligados));
     }
 
     // casas com mais equipamentos ligam-nos mais depressa
-    tempoAteProximo = random(INTERVALO_LIGAR[0], INTERVALO_LIGAR[1]) * sqrt(4 / equipamentos.length);
+    // casas com mais equipamentos ligam-nos mais depressa, e o ritmo aumenta ao longo da ronda
+    tempoAteProximo = random(INTERVALO_LIGAR[0], INTERVALO_LIGAR[1]) * sqrt(4 / equipamentos.length) / ritmoAtual();
   }
 
   // um som curto lança um Eco-Pulso a partir do cursor
@@ -494,9 +559,54 @@ function atualizarRonda(dt) {
   pulsos = pulsos.filter((pulso) => pulso.ativo);
 
   if (tempoRestante <= 0) {
-    somFimRonda();
-    estado = 'resultado';
+    terminarRonda();
   }
+}
+
+// Ritmo a que os equipamentos se ligam: 1x no início da ronda, 2,5x no fim
+function ritmoAtual() {
+  const progresso = constrain(1 - tempoRestante / DURACAO_RONDA, 0, 1);
+  return lerp(1, ACELERACAO_FINAL, progresso);
+}
+
+// Calcula o resultado, guarda o recorde e escolhe a sugestão de poupança
+function terminarRonda() {
+  const tipologia = TIPOLOGIAS[tipologiaEscolhida];
+  const taxa = totalLigados > 0 ? totalDesligados / totalLigados : 0;
+
+  // o tipo de equipamento que mais energia desperdiçou dá a dica
+  let maiorDesperdicio = 'lamp';
+  for (const tipo in desperdicio) {
+    if (desperdicio[tipo] > desperdicio[maiorDesperdicio]) maiorDesperdicio = tipo;
+  }
+
+  const recordeAnterior = recordes[tipologia.id] || 0;
+  const novoRecorde = pontos > recordeAnterior;
+  if (novoRecorde) {
+    recordes[tipologia.id] = pontos;
+    try {
+      localStorage.setItem('ecoBuilding_recordes', JSON.stringify(recordes));
+    } catch (erro) {
+      // sem acesso ao armazenamento do navegador: o recorde só fica até fechar a página
+    }
+  }
+
+  let frase;
+  if (taxa < 0.3 && totalDesligados < 3) frase = 'Poucos equipamentos desligados. ';
+  else if (taxa >= 0.85) frase = 'Excelente reação! ';
+  else if (taxa >= 0.6) frase = 'Bom ritmo, mas ficaram equipamentos a gastar. ';
+  else frase = 'Muitos equipamentos ficaram ligados sem necessidade. ';
+
+  resultado = {
+    taxa: taxa,
+    maiorDesperdicio: maiorDesperdicio,
+    novoRecorde: novoRecorde,
+    recorde: max(pontos, recordeAnterior),
+    sugestao: frase + EQUIPAMENTOS[maiorDesperdicio].dica,
+  };
+
+  somFimRonda();
+  estado = 'resultado';
 }
 
 
@@ -601,7 +711,7 @@ function desenharRonda() {
   for (const pulso of pulsos) pulso.desenhar();
   desenharEfeitos();
   desenharPainel();
-  desenharMira();
+  if (!pausado) desenharMira();
 
   // contagem inicial por cima de tudo
   if (contagem > 0) {
@@ -610,6 +720,15 @@ function desenharRonda() {
     escreverTitulo(String(ceil(contagem)), LARGURA / 2, 300, 140);
     escrever('Prepara-te!  Clica nos equipamentos ligados ou faz uma palma', LARGURA / 2, 350, 18, COR.branco);
     escrever('Desliga tudo o que tiver o alerta vermelho', LARGURA / 2, 378, 15, COR.verdeClaro);
+  }
+
+  // ecrã de pausa
+  if (pausado) {
+    fill(10, 28, 22, 210);
+    rect(0, 0, LARGURA, 546);
+    escreverTitulo('PAUSA', LARGURA / 2, 270, 70);
+    desenharBotao(BOTAO_CONTINUAR, 'CONTINUAR', () => (pausado = false));
+    desenharBotao(BOTAO_SAIR, 'SAIR PARA O MENU', () => (estado = 'menu'), true, 14);
   }
 }
 
@@ -700,6 +819,12 @@ function desenharPainel() {
   fill(corPulso);
   circle(530, 529, 10);
   escrever(textoPulso, 544, 534, 13, corPulso, LEFT);
+
+  // nível atual, ritmo e botão de pausa
+  escrever('NÍVEL ' + nivelAtual + '  ·  x' + ritmoAtual().toFixed(1).replace('.', ','), 760, 534, 13, COR.amarelo, LEFT);
+  if (contagem <= 0 && !pausado) {
+    desenharBotao(BOTAO_PAUSA, 'PAUSA', () => (pausado = true), true, 12);
+  }
 }
 
 
@@ -717,7 +842,26 @@ function desenharResultado() {
 
   escrever('PONTUAÇÃO', centro, 184, 13, COR.verdeClaro);
   escrever(String(pontos), centro, 232, 52, COR.amarelo);
-  escrever('Equipamentos desligados: ' + totalDesligados + ' de ' + totalLigados, centro, 286, 15, COR.branco);
+
+  if (resultado.novoRecorde && pontos > 0) {
+    escrever('NOVO RECORDE!', centro, 252, 14, COR.laranja);
+  } else {
+    escrever('Melhor em ' + tipologia.id + ': ' + resultado.recorde, centro, 252, 13, COR.cinza);
+  }
+
+  const percentagem = round(resultado.taxa * 100);
+  const reducao = consumoLigado > 0 ? round((100 * consumoEvitado) / consumoLigado) : 0;
+  escrever('Equipamentos desligados: ' + totalDesligados + ' de ' + totalLigados + ' (' + percentagem + '%)', centro, 286, 15, COR.branco);
+  escrever('Consumo simulado evitado: ' + formatarKW(consumoEvitado) + '  (' + reducao + '% do que esteve ligado)', centro, 310, 15, COR.branco);
+  escrever('Maior desperdício: ' + EQUIPAMENTOS[resultado.maiorDesperdicio].nome, centro, 334, 15, COR.branco);
+
+  // sugestão de poupança, numa caixa com quebra de linha automática
+  fill(45, 106, 79, 200);
+  rect(252, 352, 520, 62);
+  fill(COR.branco);
+  textSize(14);
+  textAlign(CENTER, CENTER);
+  text('Sugestão: ' + resultado.sugestao, 262, 354, 500, 58);
 
   desenharBotao(BOTAO_JOGAR_NOVAMENTE, 'JOGAR NOVAMENTE', novaRonda);
   desenharBotao(BOTAO_MENU, 'MENU', () => (estado = 'menu'), true, 16);
@@ -840,12 +984,17 @@ function somFimRonda() {
   tocarNotas([[784, 0], [659, 150], [523, 300], [392, 450]]);
 }
 
+// Subida de nível: três notas a subir
+function somNivel() {
+  tocarNotas([[523, 0], [659, 90], [784, 180]]);
+}
+
 // Cada efeito dura 1 segundo (o aviso de nível dura 1,8 s)
 function atualizarEfeitos(dt) {
   for (const efeito of efeitos) {
     efeito.tempo += dt;
   }
-  efeitos = efeitos.filter((efeito) => efeito.tempo < 1);
+  efeitos = efeitos.filter((efeito) => efeito.tempo < (efeito.tipo === 'nivel' ? 1.8 : 1));
 }
 
 function desenharEfeitos() {
@@ -870,6 +1019,18 @@ function desenharEfeitos() {
       strokeWeight(4);
       circle(x, y, 40 + tempo * 80);
       noStroke();
+    }
+
+    if (efeito.tipo === 'nivel') {
+      // aviso de subida de nível, que desaparece nos últimos 0,6 s
+      const opacidade = 255 * constrain((1.8 - tempo) / 0.6, 0, 1);
+      fill(10, 28, 22, opacidade * 0.9);
+      stroke(255, 213, 74, opacidade);
+      strokeWeight(3);
+      rect(LARGURA / 2 - 200, 250, 400, 64);
+      noStroke();
+      escrever('NÍVEL ' + nivelAtual, LARGURA / 2, 280, 26, color(255, 213, 74, opacidade));
+      escrever('Os equipamentos ligam-se mais depressa!', LARGURA / 2, 302, 13, color(245, 245, 240, opacidade));
     }
   }
 }
