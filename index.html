@@ -5,7 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Eco Building</title>
   <style>
-    body { padding: 0; margin: 0; background: #0a1c16; }
+    /* a página ocupa a janela toda e centra o jogo; o fundo escuro preenche as margens */
+    html, body { padding: 0; margin: 0; height: 100%; overflow: hidden; background: #0a1c16; }
+    body { display: flex; align-items: center; justify-content: center; }
+    /* ao ampliar o canvas, mantém os píxeis nítidos (pixel art) */
+    canvas { display: block; image-rendering: pixelated; }
   </style>
   <script src="p5/p5.js"></script>
   <script src="p5/sound/p5.sound.js"></script>

@@ -180,6 +180,7 @@ const BOTAO_MAIS = { x: 654, y: 326, w: 34, h: 26 };
 const BOTAO_PAUSA = { x: 916, y: 517, w: 92, h: 24 };
 const BOTAO_CONTINUAR = { x: 362, y: 320, w: 300, h: 52 };
 const BOTAO_SAIR = { x: 412, y: 392, w: 200, h: 40 };
+const BOTAO_ECRA_INTEIRO = { x: 838, y: 16, w: 170, h: 30 };
 
 
 // ---------------------------------------------------------------------
@@ -190,6 +191,7 @@ let estado = 'menu';          // 'menu', 'calibracao', 'jogo' ou 'resultado'
 let tipologiaEscolhida = 1;   // índice em TIPOLOGIAS (começa no T1)
 let areasClicaveis = [];      // botões e cartões desenhados no frame atual
 let ratoMexeu = false;        // a mira só aparece depois de o rato se mexer
+let tela;                     // o canvas do p5 (é ampliado para ocupar a janela)
 
 // Imagens
 let imgCeu, imgFolha, imgAlerta;
@@ -249,8 +251,9 @@ function preload() {
 }
 
 function setup() {
-  createCanvas(LARGURA, ALTURA);
+  tela = createCanvas(LARGURA, ALTURA);
   pixelDensity(1);
+  ajustarAoEcra(); // depois do pixelDensity, que repõe o tamanho original do canvas
   noSmooth(); // mantém o pixel art nítido quando as imagens são ampliadas
   textFont('Courier New');
   textStyle(BOLD);
@@ -293,6 +296,12 @@ function draw() {
   }
   desenharRodape();
 
+  // o botão de ecrã inteiro aparece fora da ronda e na pausa (durante a ronda o painel ocupa esse canto)
+  if (estado !== 'jogo' || pausado) {
+    const texto = fullscreen() ? 'SAIR DE ECRÃ INTEIRO' : 'ECRÃ INTEIRO';
+    desenharBotao(BOTAO_ECRA_INTEIRO, texto, alternarEcraInteiro, true, 12);
+  }
+
   // Durante a ronda o cursor normal é escondido e substituído pela mira
   if (estado === 'jogo' && !pausado && mouseY < 512) {
     noCursor();
@@ -301,6 +310,25 @@ function draw() {
   } else {
     cursor(ARROW);
   }
+}
+
+// O jogo é desenhado sempre a 1024 x 576 e depois ampliado pelo navegador para ocupar a janela,
+// mantendo a proporção (sobram margens escuras se o ecrã tiver outro formato).
+// O p5 converte sozinho a posição do rato para as coordenadas do jogo.
+function ajustarAoEcra() {
+  const escala = min(windowWidth / LARGURA, windowHeight / ALTURA);
+  tela.style('width', floor(LARGURA * escala) + 'px');
+  tela.style('height', floor(ALTURA * escala) + 'px');
+}
+
+// chamada pelo p5 sempre que a janela muda de tamanho (incluindo ao entrar e sair do ecrã inteiro)
+function windowResized() {
+  ajustarAoEcra();
+}
+
+// o navegador só deixa entrar em ecrã inteiro depois de um clique, por isso é um botão
+function alternarEcraInteiro() {
+  fullscreen(!fullscreen());
 }
 
 function mouseMoved() {
